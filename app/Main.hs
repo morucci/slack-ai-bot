@@ -2,30 +2,23 @@
 
 module Main where
 
-import Llama
-
 -- https://github.com/ggml-org/llama.cpp/blob/master/examples/server/README.md
 
-import Control.Concurrent (forkIO)
 import Control.Monad (forever)
 import Data.Aeson
-
--- import Data.Aeson.KeyMap as AKM
 import Data.Aeson.Types (parseMaybe)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as BL
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
+import Llama
 import Network.HTTP.Client
 import Network.HTTP.Client.TLS
-import Network.HTTP.Types
-import Wuss (runSecureClient)
-
 import Network.WebSockets hiding (requestHeaders)
 import System.Environment
 import Web.Slack
 import Web.Slack.Chat
+import Wuss (runSecureClient)
 
 resume = do
     -- rM <- llama "http://rdev:8081" "Hello my master"
@@ -53,7 +46,6 @@ sendSlack = do
     print ret
     pure ()
 
--- | Get WebSocket URL from Slack
 getWebSocketUrl :: IO String
 getWebSocketUrl = do
     manager <- newManager tlsManagerSettings
@@ -63,7 +55,10 @@ getWebSocketUrl = do
     let authRequest =
             initialRequest
                 { method = "POST"
-                , requestHeaders = [("Authorization", B.pack ("Bearer " ++ token)), ("Content-type", "application/x-www-form-urlencoded")]
+                , requestHeaders =
+                    [ ("Authorization", B.pack ("Bearer " ++ token))
+                    , ("Content-type", "application/x-www-form-urlencoded")
+                    ]
                 }
     response <- httpLbs authRequest manager
     print response
@@ -72,12 +67,11 @@ getWebSocketUrl = do
         Right (Object obj) ->
             case parseMaybe (.: "url") obj of
                 Just wsUrl -> return $ T.unpack wsUrl
-                z@(_) -> do
+                _ -> do
                     print obj
                     error "Could not find WebSocket URL in response"
         _ -> error "Invalid response from Slack"
 
--- | WebSocket client
 runSlackSocket :: String -> String -> IO ()
 runSlackSocket host' path' = runSecureClient host' 443 path' $ \conn -> do
     putStrLn "Connected to Slack via Socket Mode WebSocket"
