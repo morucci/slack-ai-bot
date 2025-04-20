@@ -21,9 +21,7 @@ import Web.Slack.Chat
 import Wuss (runSecureClient)
 
 resume = do
-    -- rM <- llama "http://rdev:8081" "Hello my master"
-    -- print rM
-    rM2 <-
+    rM1 <-
         llamaTemplated
             "http://localhost:8080"
             ( LlamaApplyTemplateRequest
@@ -31,7 +29,7 @@ resume = do
                 , LlamaMessage User "Could you sumarize this: In May 2017 Rafael Correa became the first President in more than two decades to serve out his complete terms in office since Sixto Durán Ballén, who served from 1992 to 1996. Before Correa, a period of deep political instability from 1996 to 2006 also saw a grave economic crisis in 1998-2000. During this time, Durán Ballén's three elected successors, Abdalá Bucaram, Jamil Mahuad and Lucio Gutiérrez, were deposed in popular revolts, followed by military or legislative coups d'États, in 1997, 2000, and 2005, respectively. Since Correa, Lenín Moreno (2017–2021) has also completed a full 4-year presidential term, despite a large 2019 popular revolt that nearly toppled his government. "
                 ]
             )
-    print rM2
+    print rM1
 
 getEnvs = do
     sAppToken <- lookupEnv "SLACK_APP_TOKEN"
