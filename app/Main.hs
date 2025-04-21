@@ -18,6 +18,8 @@ import Network.WebSockets hiding (requestHeaders)
 import System.Environment
 import Web.Slack
 import Web.Slack.Chat
+import Web.Slack.Conversation
+import Web.Slack.Types
 import Wuss (runSecureClient)
 
 resume = do
@@ -97,10 +99,26 @@ parseWssUrl fullUrl =
         (host', path') = break (== '/') noWss
      in (host', if null path' then "/" else path')
 
+getThreadReplies :: Text -> Text -> IO ()
+getThreadReplies channel ts = do
+    -- https://api.slack.com/methods/conversations.replies/test
+    (_, (Just token)) <- getEnvs
+    let ts' = case timestampFromText ts of
+            Right r -> r
+            Left _ -> error "Unable to parse TS"
+    config <- mkSlackConfig $ T.pack token
+    let req = mkRepliesReq (ConversationId channel) ts'
+    ret <- conversationsReplies config req
+    print ret
+    pure ()
+
 -- | Entry point
 main :: IO ()
 main = do
-    wsUrl <- getWebSocketUrl
-    let (host', path') = parseWssUrl wsUrl
-    putStrLn $ "Connecting to: " ++ wsUrl
-    runSlackSocket host' path'
+    -- wsUrl <- getWebSocketUrl
+    -- let (host', path') = parseWssUrl wsUrl
+    -- putStrLn $ "Connecting to: " ++ wsUrl
+    -- runSlackSocket host' path'
+
+    -- Take the thread_ts from the event where the bot has been pinged.
+    getThreadReplies "C08P6DFRRMX" "1745256051.471189"
