@@ -11,6 +11,7 @@ import Data.Aeson.Types (Parser, parseMaybe)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as BL
 
+import Data.Maybe
 import Data.Text as T (Text)
 import qualified Data.Text as T
 import GHC.Generics
@@ -116,6 +117,19 @@ getWebSocketUrl = do
                     error "Could not find WebSocket URL in response"
         _ -> error "Invalid response from Slack"
 
+createPrompt :: [Web.Slack.Common.Message] -> Text
+createPrompt = addMessageToPrompt basePrompt
+  where
+    basePrompt = "Here is the conversation that you need to summarize:\n"
+    buildNewPrompt :: Text -> Web.Slack.Common.SlackMessageText -> Text
+    buildNewPrompt prompt' (Web.Slack.Common.SlackMessageText msg) = prompt' <> msg <> "\n"
+    addMessageToPrompt :: Text -> [Web.Slack.Common.Message] -> Text
+    addMessageToPrompt prompt' msgs = case msgs of
+        (msg : rest) ->
+            let newPrompt = buildNewPrompt prompt' (Web.Slack.Common.messageText msg)
+             in addMessageToPrompt newPrompt rest
+        [] -> prompt'
+
 runSlackSocket :: String -> String -> IO ()
 runSlackSocket host' path' = runSecureClient host' 443 path' $ \conn -> do
     let botId = "<@U08NULM0SJH>"
@@ -137,7 +151,7 @@ runSlackSocket host' path' = runSecureClient host' 443 path' $ \conn -> do
                                     putStrLn "Bot mentionned ! let get the thread replies"
                                     replies <- getThreadReplies (seChannel $ seEvent evPayload) $ seThreadTs $ seEvent evPayload
                                     putStrLn $ show replies
-                                    -- TODO create the prompt
+                                    print $ createPrompt $ fromMaybe (error "No history") replies
                                     -- TODO query the LLM
                                     -- TODO send back the LLM reply
                                     pure ()
