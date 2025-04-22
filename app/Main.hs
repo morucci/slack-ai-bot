@@ -38,10 +38,11 @@ getEnvs = do
     sBotToken <- lookupEnv "SLACK_BOT_TOKEN"
     pure (sAppToken, sBotToken)
 
-sendSlack = do
+sendSlack :: Text -> Maybe Text -> Text -> IO ()
+sendSlack channel threadTs message = do
     (_, (Just token)) <- getEnvs
     config <- mkSlackConfig $ T.pack token
-    let msg = mkPostMsgReq "ai-bot" "test message"
+    let msg = (mkPostMsgReq channel message){postMsgReqThreadTs = threadTs}
     ret <- chatPostMessage config msg
     print ret
     pure ()
@@ -121,4 +122,6 @@ main = do
     -- runSlackSocket host' path'
 
     -- Take the thread_ts from the event where the bot has been pinged.
-    getThreadReplies "C08P6DFRRMX" "1745256051.471189"
+    -- getThreadReplies "C08P6DFRRMX" "1745256051.471189"
+    sendSlack "ai-bot" (Just "1745256051.471189") "Hello to thread"
+    pure ()
