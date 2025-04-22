@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Main where
@@ -11,6 +12,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as BL
 import Data.Text (Text)
 import qualified Data.Text as T
+import GHC.Generics
 import Llama
 import Network.HTTP.Client
 import Network.HTTP.Client.TLS
@@ -21,6 +23,14 @@ import Web.Slack.Chat
 import Web.Slack.Conversation
 import Web.Slack.Types
 import Wuss (runSecureClient)
+
+data SlackWSEvent = SlackWSEvent
+    { envelopeId :: Maybe Text
+    }
+    deriving (Show, Generic)
+
+instance FromJSON SlackWSEvent where
+    parseJSON = genericParseJSON $ defaultOptions{fieldLabelModifier = camelTo2 '_'}
 
 resume = do
     rM1 <-
@@ -81,18 +91,17 @@ runSlackSocket host' path' = runSecureClient host' 443 path' $ \conn -> do
         msg <- receiveData conn
         putStrLn "----- Received Event -----"
         BL.putStrLn msg
-        case decode msg of
-            Just (Object obj) -> case parseMaybe (.: "envelope_id") obj of
-                Just envelopeId -> do
-                    let ack = object ["envelope_id" .= (envelopeId :: Text)]
-                    print ack
-                    sendTextData conn (encode ack)
-                _ -> do
-                    print "no envelope id"
-                    return ()
-            _ -> do
-                print "Unable to decode"
-                print msg
+        case decodeSlackWSEvent msg of
+            Right e -> case envelopeId e of
+                Just eId -> do
+                    print e
+                    sendTextData conn (encode eId)
+                Nothing -> do
+                    print "Skipping message w/o envelope id"
+            Left err -> error $ "Unable to decode: " ++ show err
+  where
+    decodeSlackWSEvent :: BL.ByteString -> Either String SlackWSEvent
+    decodeSlackWSEvent = eitherDecode
 
 parseWssUrl :: String -> (String, String)
 parseWssUrl fullUrl =
@@ -116,12 +125,12 @@ getThreadReplies channel ts = do
 -- | Entry point
 main :: IO ()
 main = do
-    -- wsUrl <- getWebSocketUrl
-    -- let (host', path') = parseWssUrl wsUrl
-    -- putStrLn $ "Connecting to: " ++ wsUrl
-    -- runSlackSocket host' path'
+    wsUrl <- getWebSocketUrl
+    let (host', path') = parseWssUrl wsUrl
+    putStrLn $ "Connecting to: " ++ wsUrl
+    runSlackSocket host' path'
 
-    -- Take the thread_ts from the event where the bot has been pinged.
-    -- getThreadReplies "C08P6DFRRMX" "1745256051.471189"
-    sendSlack "ai-bot" (Just "1745256051.471189") "Hello to thread"
-    pure ()
+-- Take the thread_ts from the event where the bot has been pinged.
+-- getThreadReplies "C08P6DFRRMX" "1745256051.471189"
+-- sendSlack "ai-bot" (Just "1745256051.471189") "Hello to thread"
+-- pure ()
