@@ -21,6 +21,7 @@ import Network.WebSockets hiding (requestHeaders)
 import System.Environment
 import Web.Slack
 import Web.Slack.Chat
+import qualified Web.Slack.Common
 import Web.Slack.Conversation
 import Web.Slack.Types
 import Wuss (runSecureClient)
@@ -30,6 +31,7 @@ data SlackWSEventEvent = SlackWSEventEvent
     , seText :: Text
     , seType :: Text
     , seThreadTs :: Text
+    , seChannel :: Text
     }
     deriving (Show, Generic)
 
@@ -116,6 +118,7 @@ getWebSocketUrl = do
 
 runSlackSocket :: String -> String -> IO ()
 runSlackSocket host' path' = runSecureClient host' 443 path' $ \conn -> do
+    let botId = "<@U08NULM0SJH>"
     putStrLn "Connected to Slack via Socket Mode WebSocket"
     forever $ do
         putStrLn "Waiting for event ..."
@@ -127,6 +130,20 @@ runSlackSocket host' path' = runSecureClient host' 443 path' $ \conn -> do
                     let ack = object ["envelope_id" .= (eId :: Text)]
                     sendTextData conn (encode ack)
                     putStrLn $ "Decoded event: " ++ show e
+                    case sePayload e of
+                        Just evPayload -> do
+                            if T.isInfixOf botId (seText $ seEvent evPayload)
+                                then do
+                                    putStrLn "Bot mentionned ! let get the thread replies"
+                                    replies <- getThreadReplies (seChannel $ seEvent evPayload) $ seThreadTs $ seEvent evPayload
+                                    putStrLn $ show replies
+                                    -- TODO create the prompt
+                                    -- TODO query the LLM
+                                    -- TODO send back the LLM reply
+                                    pure ()
+                                else do
+                                    putStrLn "Skipping the message because of no mention of the bot"
+                        Nothing -> putStrLn "No payload - skipping"
                 Nothing -> do
                     putStrLn "Skipping message w/o envelope id"
             Left err -> putStrLn $ "Unable to decode: " ++ show err
@@ -140,7 +157,7 @@ parseWssUrl fullUrl =
         (host', path') = break (== '/') noWss
      in (host', if null path' then "/" else path')
 
-getThreadReplies :: Text -> Text -> IO ()
+getThreadReplies :: Text -> Text -> IO (Maybe [Web.Slack.Common.Message])
 getThreadReplies channel ts = do
     -- https://api.slack.com/methods/conversations.replies/test
     (_, (Just token)) <- getEnvs
@@ -149,9 +166,12 @@ getThreadReplies channel ts = do
             Left _ -> error "Unable to parse TS"
     config <- mkSlackConfig $ T.pack token
     let req = mkRepliesReq (ConversationId channel) ts'
-    ret <- conversationsReplies config req
-    print ret
-    pure ()
+    resp <- conversationsReplies config req
+    case resp of
+        Right d -> pure $ Just $ historyRspMessages d
+        Left err -> do
+            putStrLn $ "Unable to fetch replies" ++ show err
+            pure Nothing
 
 -- | Entry point
 main :: IO ()
