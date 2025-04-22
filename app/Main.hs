@@ -7,10 +7,11 @@ module Main where
 
 import Control.Monad (forever)
 import Data.Aeson
-import Data.Aeson.Types (parseMaybe)
+import Data.Aeson.Types (Parser, parseMaybe)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as BL
-import Data.Text (Text)
+
+import Data.Text as T (Text)
 import qualified Data.Text as T
 import GHC.Generics
 import Llama
@@ -24,13 +25,43 @@ import Web.Slack.Conversation
 import Web.Slack.Types
 import Wuss (runSecureClient)
 
-data SlackWSEvent = SlackWSEvent
-    { envelopeId :: Maybe Text
+data SlackWSEventEvent = SlackWSEventEvent
+    { seUser :: Text
+    , seText :: Text
+    , seType :: Text
+    , seThreadTs :: Text
     }
     deriving (Show, Generic)
 
+data SlackWSEventPayload = SlackWSEventPayload
+    { seEvent :: SlackWSEventEvent
+    }
+    deriving (Show, Generic)
+
+data SlackWSEvent = SlackWSEvent
+    { seEnvelopeId :: Maybe Text
+    , sePayload :: Maybe SlackWSEventPayload
+    }
+    deriving (Show, Generic)
+
+wsEventKeyModifier :: String -> String
+wsEventKeyModifier = (camelTo2 '_' . dropPrefix)
+  where
+    dropPrefix s =
+        let st = T.pack s
+         in T.unpack (T.drop (T.length "se") st)
+
+wsJSONEventParseOptions :: Options
+wsJSONEventParseOptions = defaultOptions{fieldLabelModifier = wsEventKeyModifier}
+
 instance FromJSON SlackWSEvent where
-    parseJSON = genericParseJSON $ defaultOptions{fieldLabelModifier = camelTo2 '_'}
+    parseJSON = genericParseJSON wsJSONEventParseOptions
+
+instance FromJSON SlackWSEventPayload where
+    parseJSON = genericParseJSON wsJSONEventParseOptions
+
+instance FromJSON SlackWSEventEvent where
+    parseJSON = genericParseJSON wsJSONEventParseOptions
 
 resume = do
     rM1 <-
@@ -89,16 +120,16 @@ runSlackSocket host' path' = runSecureClient host' 443 path' $ \conn -> do
     forever $ do
         putStrLn "Waiting for event ..."
         msg <- receiveData conn
-        putStrLn "----- Received Event -----"
-        BL.putStrLn msg
+        putStrLn $ "Events received (raw): " ++ BL.unpack msg
         case decodeSlackWSEvent msg of
-            Right e -> case envelopeId e of
+            Right e -> case seEnvelopeId e of
                 Just eId -> do
-                    print e
-                    sendTextData conn (encode eId)
+                    let ack = object ["envelope_id" .= (eId :: Text)]
+                    sendTextData conn (encode ack)
+                    putStrLn $ "Decoded event: " ++ show e
                 Nothing -> do
-                    print "Skipping message w/o envelope id"
-            Left err -> error $ "Unable to decode: " ++ show err
+                    putStrLn "Skipping message w/o envelope id"
+            Left err -> putStrLn $ "Unable to decode: " ++ show err
   where
     decodeSlackWSEvent :: BL.ByteString -> Either String SlackWSEvent
     decodeSlackWSEvent = eitherDecode
