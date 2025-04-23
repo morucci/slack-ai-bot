@@ -7,13 +7,12 @@ module Main where
 
 import Control.Monad (forever)
 import Data.Aeson
-import Data.Aeson.Types (Parser, parseMaybe)
+import Data.Aeson.Types (parseMaybe)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as BL
 
 import Data.Maybe
-import Data.Text as T (Text)
-import qualified Data.Text as T
+import Data.Text as T
 import GHC.Generics
 import Llama
 import Network.HTTP.Client
@@ -22,9 +21,8 @@ import Network.WebSockets hiding (requestHeaders)
 import System.Environment
 import Web.Slack
 import Web.Slack.Chat
-import qualified Web.Slack.Common
+import Web.Slack.Common
 import Web.Slack.Conversation
-import Web.Slack.Types
 import Wuss (runSecureClient)
 
 data SlackWSEventEvent = SlackWSEventEvent
@@ -66,17 +64,19 @@ instance FromJSON SlackWSEventPayload where
 instance FromJSON SlackWSEventEvent where
     parseJSON = genericParseJSON wsJSONEventParseOptions
 
-resume = do
+resume :: Text -> IO (Maybe Text)
+resume prompt' = do
     rM1 <-
         llamaTemplated
-            "http://localhost:8080"
+            "http://rdev:8080"
             ( LlamaApplyTemplateRequest
-                [ LlamaMessage System "You are fast as possible in your reply and be the succint as possible to summarize my text requests. You can use bullet points for example."
-                , LlamaMessage User "Could you sumarize this: In May 2017 Rafael Correa became the first President in more than two decades to serve out his complete terms in office since Sixto Durán Ballén, who served from 1992 to 1996. Before Correa, a period of deep political instability from 1996 to 2006 also saw a grave economic crisis in 1998-2000. During this time, Durán Ballén's three elected successors, Abdalá Bucaram, Jamil Mahuad and Lucio Gutiérrez, were deposed in popular revolts, followed by military or legislative coups d'États, in 1997, 2000, and 2005, respectively. Since Correa, Lenín Moreno (2017–2021) has also completed a full 4-year presidential term, despite a large 2019 popular revolt that nearly toppled his government. "
+                [ LlamaMessage System "You are a concise and efficient assistant. Your job is to summarize group chat conversations without adding unnecessary detail. Always preserve usernames, and highlight only the key points, agreements, or decisions made. Keep it short and direct."
+                , LlamaMessage User prompt'
                 ]
             )
-    print rM1
+    pure rM1
 
+getEnvs :: IO (Maybe String, Maybe String)
 getEnvs = do
     sAppToken <- lookupEnv "SLACK_APP_TOKEN"
     sBotToken <- lookupEnv "SLACK_BOT_TOKEN"
@@ -120,19 +120,26 @@ getWebSocketUrl = do
 createPrompt :: [Web.Slack.Common.Message] -> Text
 createPrompt = addMessageToPrompt basePrompt
   where
-    basePrompt = "Here is the conversation that you need to summarize:\n"
-    buildNewPrompt :: Text -> Web.Slack.Common.SlackMessageText -> Text
-    buildNewPrompt prompt' (Web.Slack.Common.SlackMessageText msg) = prompt' <> msg <> "\n"
+    botId = "U08NULM0SJH"
+    botMention = "<@U08NULM0SJH>"
+    basePrompt = "Summarize the following group chat conversation. Focus on the key points each user made, and include any important decisions or agreements. Refer to users by their usernames. Keep the summary short and efficient.:\n\n"
+    buildNewPrompt :: Text -> SlackMessageText -> Text -> Text
+    buildNewPrompt prompt' (SlackMessageText msg) user = prompt' <> "[" <> user <> "]: " <> msg <> "\n\n"
     addMessageToPrompt :: Text -> [Web.Slack.Common.Message] -> Text
     addMessageToPrompt prompt' msgs = case msgs of
         (msg : rest) ->
-            let newPrompt = buildNewPrompt prompt' (Web.Slack.Common.messageText msg)
+            let newPrompt = case Web.Slack.Common.messageUser msg of
+                    Just (Web.Slack.Common.UserId user) ->
+                        if user /= botId && not (T.isInfixOf botMention (Web.Slack.Common.unSlackMessageText $ Web.Slack.Common.messageText msg))
+                            then buildNewPrompt prompt' (Web.Slack.Common.messageText msg) user
+                            else prompt'
+                    Nothing -> prompt'
              in addMessageToPrompt newPrompt rest
         [] -> prompt'
 
 runSlackSocket :: String -> String -> IO ()
 runSlackSocket host' path' = runSecureClient host' 443 path' $ \conn -> do
-    let botId = "<@U08NULM0SJH>"
+    let botMention = "<@U08NULM0SJH>"
     putStrLn "Connected to Slack via Socket Mode WebSocket"
     forever $ do
         putStrLn "Waiting for event ..."
@@ -142,18 +149,25 @@ runSlackSocket host' path' = runSecureClient host' 443 path' $ \conn -> do
             Right e -> case seEnvelopeId e of
                 Just eId -> do
                     let ack = object ["envelope_id" .= (eId :: Text)]
+                    print $ "Sending ack: " ++ show ack
                     sendTextData conn (encode ack)
                     putStrLn $ "Decoded event: " ++ show e
                     case sePayload e of
                         Just evPayload -> do
-                            if T.isInfixOf botId (seText $ seEvent evPayload)
+                            if T.isInfixOf botMention (seText $ seEvent evPayload)
                                 then do
                                     putStrLn "Bot mentionned ! let get the thread replies"
-                                    replies <- getThreadReplies (seChannel $ seEvent evPayload) $ seThreadTs $ seEvent evPayload
-                                    putStrLn $ show replies
-                                    print $ createPrompt $ fromMaybe (error "No history") replies
-                                    -- TODO query the LLM
-                                    -- TODO send back the LLM reply
+                                    let channel = seChannel $ seEvent evPayload
+                                        threadTs = seThreadTs $ seEvent evPayload
+                                    replies <- getThreadReplies channel threadTs
+                                    -- putStrLn $ show replies
+                                    let prompt' = createPrompt $ fromMaybe (error "No history") replies
+                                    putStrLn $ T.unpack prompt'
+                                    _ <- sendSlack channel (Just threadTs) "Computing the thread summary ..."
+                                    mSummary <- resume prompt'
+                                    case mSummary of
+                                        Just summary -> sendSlack channel (Just threadTs) summary
+                                        Nothing -> sendSlack channel (Just threadTs) "I'm sorry but I was unable to summarize this thread."
                                     pure ()
                                 else do
                                     putStrLn "Skipping the message because of no mention of the bot"
@@ -167,9 +181,9 @@ runSlackSocket host' path' = runSecureClient host' 443 path' $ \conn -> do
 
 parseWssUrl :: String -> (String, String)
 parseWssUrl fullUrl =
-    let noWss = drop (T.length "wss://") fullUrl
-        (host', path') = break (== '/') noWss
-     in (host', if null path' then "/" else path')
+    let noWss = Prelude.drop (T.length "wss://") fullUrl
+        (host', path') = Prelude.break (== '/') noWss
+     in (host', if Prelude.null path' then "/" else path')
 
 getThreadReplies :: Text -> Text -> IO (Maybe [Web.Slack.Common.Message])
 getThreadReplies channel ts = do
