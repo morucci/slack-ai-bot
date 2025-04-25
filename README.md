@@ -46,5 +46,6 @@ The bot's app must be added to the channel, just mention the bot with `@<bot-nam
 export SLACK_APP_TOKEN=xapp-******
 export SLACK_BOT_TOKEN=xoxb-******
 export SLACK_BOT_ID=U08PT646HD1
+export LLM_BACKEND_API=http://ramalama:8080
 cabal run
 ```
