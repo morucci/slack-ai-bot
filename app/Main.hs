@@ -3,8 +3,6 @@
 
 module Main where
 
--- https://github.com/ggml-org/llama.cpp/blob/master/examples/server/README.md
-
 import Control.Monad (forever)
 import Data.Aeson
 import Data.Aeson.Types (parseMaybe)
@@ -65,36 +63,32 @@ instance FromJSON SlackWSEventEvent where
     parseJSON = genericParseJSON wsJSONEventParseOptions
 
 resume :: Text -> IO (Maybe Text)
-resume prompt' = do
-    rM1 <-
-        llamaTemplated
-            "http://rdev:8080"
-            ( LlamaApplyTemplateRequest
-                [ LlamaMessage System "You are a concise and efficient assistant. Your job is to summarize group chat conversations without adding unnecessary detail. Always preserve usernames, and highlight only the key points, agreements, or decisions made. Keep it short and direct."
-                , LlamaMessage User prompt'
-                ]
-            )
-    pure rM1
+resume prompt' =
+    llamaTemplated
+        "http://rdev:8080"
+        ( LlamaApplyTemplateRequest
+            [ LlamaMessage System "You are a concise and efficient assistant. Your job is to summarize group chat conversations without adding unnecessary detail. Always preserve usernames, and highlight only the key points, agreements, or decisions made. Keep it short and direct."
+            , LlamaMessage User prompt'
+            ]
+        )
 
-getEnvs :: IO (Maybe String, Maybe String)
+getEnvs :: IO (Maybe String, Maybe String, Maybe String)
 getEnvs = do
     sAppToken <- lookupEnv "SLACK_APP_TOKEN"
     sBotToken <- lookupEnv "SLACK_BOT_TOKEN"
-    pure (sAppToken, sBotToken)
+    sBotId <- lookupEnv "SLACK_BOT_ID"
+    pure (sAppToken, sBotToken, sBotId)
 
-sendSlack :: Text -> Maybe Text -> Text -> IO ()
-sendSlack channel threadTs message = do
-    (_, (Just token)) <- getEnvs
+sendSlack :: String -> Text -> Maybe Text -> Text -> IO ()
+sendSlack token channel threadTs message = do
     config <- mkSlackConfig $ T.pack token
     let msg = (mkPostMsgReq channel message){postMsgReqThreadTs = threadTs}
     ret <- chatPostMessage config msg
     print ret
-    pure ()
 
-getWebSocketUrl :: IO String
-getWebSocketUrl = do
+getWebSocketUrl :: String -> IO String
+getWebSocketUrl token = do
     manager <- newManager tlsManagerSettings
-    ((Just token), _) <- getEnvs
     let request = "https://slack.com/api/apps.connections.open"
     initialRequest <- parseRequest request
     let authRequest =
@@ -106,22 +100,21 @@ getWebSocketUrl = do
                     ]
                 }
     response <- httpLbs authRequest manager
-    print response
     let body = responseBody response
     case eitherDecode body of
         Right (Object obj) ->
             case parseMaybe (.: "url") obj of
                 Just wsUrl -> return $ T.unpack wsUrl
-                _ -> do
-                    print obj
-                    error "Could not find WebSocket URL in response"
+                _ -> error "Could not find WebSocket URL in response"
         _ -> error "Invalid response from Slack"
 
-createPrompt :: [Web.Slack.Common.Message] -> Text
-createPrompt = addMessageToPrompt basePrompt
+mkBotMention :: Text -> Text
+mkBotMention botId = "<@" <> botId <> ">"
+
+createPrompt :: Text -> [Web.Slack.Common.Message] -> Text
+createPrompt botId = addMessageToPrompt basePrompt
   where
-    botId = "U08NULM0SJH"
-    botMention = "<@U08NULM0SJH>"
+    botMention = mkBotMention botId
     basePrompt = "Summarize the following group chat conversation. Focus on the key points each user made, and include any important decisions or agreements. Refer to users by their usernames. Keep the summary short and efficient.:\n\n"
     buildNewPrompt :: Text -> SlackMessageText -> Text -> Text
     buildNewPrompt prompt' (SlackMessageText msg) user = prompt' <> "[" <> user <> "]: " <> msg <> "\n\n"
@@ -137,9 +130,9 @@ createPrompt = addMessageToPrompt basePrompt
              in addMessageToPrompt newPrompt rest
         [] -> prompt'
 
-runSlackSocket :: String -> String -> IO ()
-runSlackSocket host' path' = runSecureClient host' 443 path' $ \conn -> do
-    let botMention = "<@U08NULM0SJH>"
+runSlackSocket :: String -> String -> String -> String -> IO ()
+runSlackSocket sBotToken sBotId host' path' = runSecureClient host' 443 path' $ \conn -> do
+    let botMention = mkBotMention $ T.pack sBotId
     putStrLn "Connected to Slack via Socket Mode WebSocket"
     forever $ do
         putStrLn "Waiting for event ..."
@@ -159,15 +152,15 @@ runSlackSocket host' path' = runSecureClient host' 443 path' $ \conn -> do
                                     putStrLn "Bot mentionned ! let get the thread replies"
                                     let channel = seChannel $ seEvent evPayload
                                         threadTs = seThreadTs $ seEvent evPayload
-                                    replies <- getThreadReplies channel threadTs
+                                    replies <- getThreadReplies sBotToken channel threadTs
                                     -- putStrLn $ show replies
-                                    let prompt' = createPrompt $ fromMaybe (error "No history") replies
-                                    putStrLn $ T.unpack prompt'
-                                    _ <- sendSlack channel (Just threadTs) "Computing the thread summary ..."
+                                    let prompt' = createPrompt (T.pack sBotId) $ fromMaybe (error "No history") replies
+                                    -- putStrLn $ T.unpack prompt'
+                                    _ <- sendSlack sBotToken channel (Just threadTs) "Computing the thread summary ..."
                                     mSummary <- resume prompt'
                                     case mSummary of
-                                        Just summary -> sendSlack channel (Just threadTs) summary
-                                        Nothing -> sendSlack channel (Just threadTs) "I'm sorry but I was unable to summarize this thread."
+                                        Just summary -> sendSlack sBotToken channel (Just threadTs) summary
+                                        Nothing -> sendSlack sBotToken channel (Just threadTs) "I'm sorry but I was unable to summarize this thread."
                                     pure ()
                                 else do
                                     putStrLn "Skipping the message because of no mention of the bot"
@@ -185,10 +178,9 @@ parseWssUrl fullUrl =
         (host', path') = Prelude.break (== '/') noWss
      in (host', if Prelude.null path' then "/" else path')
 
-getThreadReplies :: Text -> Text -> IO (Maybe [Web.Slack.Common.Message])
-getThreadReplies channel ts = do
+getThreadReplies :: String -> Text -> Text -> IO (Maybe [Web.Slack.Common.Message])
+getThreadReplies token channel ts = do
     -- https://api.slack.com/methods/conversations.replies/test
-    (_, (Just token)) <- getEnvs
     let ts' = case timestampFromText ts of
             Right r -> r
             Left _ -> error "Unable to parse TS"
@@ -204,12 +196,8 @@ getThreadReplies channel ts = do
 -- | Entry point
 main :: IO ()
 main = do
-    wsUrl <- getWebSocketUrl
+    (Just sAPPToken, Just sBotToken, Just sBotId) <- getEnvs
+    wsUrl <- getWebSocketUrl sAPPToken
     let (host', path') = parseWssUrl wsUrl
     putStrLn $ "Connecting to: " ++ wsUrl
-    runSlackSocket host' path'
-
--- Take the thread_ts from the event where the bot has been pinged.
--- getThreadReplies "C08P6DFRRMX" "1745256051.471189"
--- sendSlack "ai-bot" (Just "1745256051.471189") "Hello to thread"
--- pure ()
+    runSlackSocket sBotToken sBotId host' path'
